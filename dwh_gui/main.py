@@ -5,8 +5,13 @@ from PyQt6.QtWidgets import (
     QLabel, QHBoxLayout, QPushButton, QListWidget, QFileDialog, QTextEdit
 )
 from PyQt6.QtCore import Qt
-import utils.render_path
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QLabel, QPushButton, QComboBox
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QLineEdit, QLabel, QComboBox,
+    QPushButton, QFileDialog, QMessageBox, QHBoxLayout
+)
+import yaml
+import os
+
 
 class ReleaseBuilderApp(QMainWindow):
     def __init__(self):
@@ -16,7 +21,7 @@ class ReleaseBuilderApp(QMainWindow):
 
         self.tabs = QTabWidget()
         self.file_upload_tab = FileUploadTab()
-        self.anchors_masks_tab = AnchorsTab()
+        self.anchors_masks_tab = AnchorUI()
         self.release_tab = ReleaseBuildTab()
         self.deps_tab = DependenciesTab()
         self.log_tab = LogTab()
@@ -70,7 +75,7 @@ class FileUploadTab(QWidget):
                     self.files_list.addItem(f)
                     self.file_uploaded.emit(f)
 
-class AnchorsTab(QWidget):
+class AnchorUI(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout()
@@ -100,13 +105,25 @@ class AnchorsTab(QWidget):
         self.preview = QLabel("Пример пути появится здесь…")
         layout.addWidget(self.preview)
 
+        # Кнопки для работы с yaml
+        btn_layout = QHBoxLayout()
+        self.save_btn = QPushButton("Сохранить шаблон YAML")
+        self.load_btn = QPushButton("Загрузить шаблон YAML")
+        self.new_btn = QPushButton("Создать новый")
+        btn_layout.addWidget(self.new_btn)
+        btn_layout.addWidget(self.save_btn)
+        btn_layout.addWidget(self.load_btn)
+        layout.addLayout(btn_layout)
+
         self.anchor_input.textChanged.connect(self.update_preview)
         self.path_template_input.textChanged.connect(self.update_preview)
+        self.save_btn.clicked.connect(self.save_to_yaml)
+        self.load_btn.clicked.connect(self.load_from_yaml)
+        self.new_btn.clicked.connect(self.new_template)
 
         self.setLayout(layout)
 
     def update_preview(self):
-        # Возьмём фейковые значения для примера (или потом — актуальные из кода)
         example_vars = {
             'папка': 'models',
             'стрим': 'mis',
@@ -116,10 +133,54 @@ class AnchorsTab(QWidget):
         }
         template = self.path_template_input.text()
         if template:
-            path = utils.render_path(template, example_vars)
-            self.preview.setText(f"Пример: {path}")
+            try:
+                path = template.format(**example_vars)
+                self.preview.setText(f"Пример: {path}")
+            except Exception:
+                self.preview.setText("Ошибка в шаблоне!")
         else:
             self.preview.setText("Пример пути появится здесь…")
+
+    def save_to_yaml(self):
+        anchor = self.anchor_input.text().strip()
+        template = self.path_template_input.text().strip()
+        if not anchor or not template:
+            QMessageBox.warning(self, "Ошибка", "Заполните оба поля!")
+            return
+
+        data = {
+            "anchor": anchor,
+            "template": template
+        }
+
+        filename, _ = QFileDialog.getSaveFileName(self, "Сохранить YAML шаблон", filter="YAML Files (*.yaml *.yml)")
+        if filename:
+            if not filename.endswith('.yaml') and not filename.endswith('.yml'):
+                filename += ".yaml"
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    yaml.dump(data, f, allow_unicode=True)
+                QMessageBox.information(self, "Готово", f"Шаблон сохранён в:\n{filename}")
+            except Exception as ex:
+                QMessageBox.critical(self, "Ошибка сохранения", str(ex))
+
+    def load_from_yaml(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Загрузить YAML шаблон", filter="YAML Files (*.yaml *.yml)")
+        if filename and os.path.exists(filename):
+            try:
+
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f)
+                self.anchor_input.setText(data.get('anchor', ''))
+                self.path_template_input.setText(data.get('template', ''))
+                QMessageBox.information(self, "Загружено", "Шаблон успешно загружен.")
+            except Exception as ex:
+                QMessageBox.critical(self, "Ошибка загрузки", str(ex))
+
+            def new_template(self):
+                self.anchor_input.clear()
+                self.path_template_input.clear()
+                self.preview.setText("Пример пути появится здесь…")
 
 
 class ReleaseBuildTab(QWidget):
