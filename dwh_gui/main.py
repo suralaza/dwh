@@ -177,10 +177,10 @@ class AnchorUI(QWidget):
             except Exception as ex:
                 QMessageBox.critical(self, "Ошибка загрузки", str(ex))
 
-            def new_template(self):
-                self.anchor_input.clear()
-                self.path_template_input.clear()
-                self.preview.setText("Пример пути появится здесь…")
+    def new_template(self):
+        self.anchor_input.clear()
+        self.path_template_input.clear()
+        self.preview.setText("Пример пути появится здесь…")
 
 
 class ReleaseBuildTab(QWidget):
