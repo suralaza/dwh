@@ -34,15 +34,14 @@ class ReleaseBuilderApp(QMainWindow):
 
         # Для примера: прокинем логгер для вывода сообщений
         self.logger = self.log_tab
-        self.logger = self.settings_tab
 
 
         # Связывание событий, пример
         self.file_upload_tab.file_uploaded.connect(
             lambda fname: self.logger.add_log(f"Загружен файл: {fname}")
         )
-        self.settings_tab.get_conn_params.connect(
-            lambda params: self.logger.add_log(f"Параметры: {[params]}")
+        self.rules_mask_tab.add_rules.connect(
+            lambda val: self.logger.add_log(f"Правила: {val}")
         )
 
 class FileUploadTab(QWidget):
@@ -174,6 +173,7 @@ DEFAULT_COLUMNS = ['Тип объекта БД', 'Якорь парсера', '�
 
 class RulesTab(QWidget):
     """Вкладка для таблицы с правилами, загрузки/сохранения, импорта/экспорта."""
+    add_rules = pyqtSignal(str)
 
     def __init__(self, settings_tab=None):
         super().__init__()
@@ -207,6 +207,7 @@ class RulesTab(QWidget):
         self.load_csv_btn.clicked.connect(self.load_from_csv)
         self.save_csv_btn.clicked.connect(self.save_to_csv)
         self.load_pg_btn.clicked.connect(self.load_from_postgres)
+
 
     def show_context_menu(self, pos):
         menu = QMenu()
