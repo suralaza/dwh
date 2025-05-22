@@ -1,13 +1,12 @@
-
 import sys
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget, QListWidget, QFileDialog,QApplication, QMainWindow,
-    QFormLayout, QLineEdit, QTextEdit, QMessageBox,QHeaderView, QListWidgetItem,QMenu,QTableWidget, QTableWidgetItem,QTabWidget,QInputDialog
-)
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-import psycopg2
 import csv
-
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget, QListWidget, QFileDialog,
+    QApplication, QMainWindow, QFormLayout, QLineEdit, QTextEdit, QMessageBox, QHeaderView, QListWidgetItem,
+    QMenu, QTableWidget, QTableWidgetItem, QTabWidget, QInputDialog
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+import duckdb
 
 class ReleaseBuilderApp(QMainWindow):
     def __init__(self):
@@ -32,11 +31,8 @@ class ReleaseBuilderApp(QMainWindow):
 
         self.setCentralWidget(self.tabs)
 
-        # Для примера: прокинем логгер для вывода сообщений
+        # Пример прокидывания логгера
         self.logger = self.log_tab
-
-
-        # Связывание событий, пример
         self.file_upload_tab.file_uploaded.connect(
             lambda fname: self.logger.add_log(f"Загружен файл: {fname}")
         )
@@ -46,18 +42,14 @@ class ReleaseBuilderApp(QMainWindow):
 
 class FileUploadTab(QWidget):
     file_uploaded = pyqtSignal(str)
-
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout()
-
         self.label = QLabel("Загрузите релизные файлы для обработки")
         self.upload_btn = QPushButton("Загрузить файл")
         self.upload_btn.clicked.connect(self.open_file_dialog)
-
         self.files_list = QListWidget()
         self.files = []
-
         layout.addWidget(self.label)
         layout.addWidget(self.upload_btn)
         layout.addWidget(self.files_list)
@@ -74,102 +66,10 @@ class FileUploadTab(QWidget):
                     self.files_list.addItem(f)
                     self.file_uploaded.emit(f)
 
-class SettingsTab(QWidget):
-    """Вкладка настроек с меню выбора категорий слева."""
+# --- Важные обновления: ---------------------------------------------------
 
-    def __init__(self):
-        super().__init__()
-        self.connection = None  # Для хранения соединения с БД
-        self.init_ui()
-
-    def init_ui(self):
-        main_layout = QHBoxLayout()
-        self.menu_list = QListWidget()
-        self.menu_list.setMaximumWidth(180)
-        self.menu_list.addItem("Подключения")
-        self.menu_list.addItem("Лицензия")
-        self.menu_list.addItem("LLM")
-        self.menu_list.addItem("Общие сведения")
-        self.menu_list.currentRowChanged.connect(self.switch_settings)
-        self.settings_stack = QStackedWidget()
-        self.conn_widget_instance = self.conn_widget()
-        self.settings_stack.addWidget(self.conn_widget_instance)
-        self.settings_stack.addWidget(self.license_widget())
-        self.settings_stack.addWidget(self.llm_widget())
-        self.settings_stack.addWidget(self.info_widget())
-        main_layout.addWidget(self.menu_list)
-        main_layout.addWidget(self.settings_stack)
-        self.setLayout(main_layout)
-        self.menu_list.setCurrentRow(0)
-
-    def switch_settings(self, index):
-        self.settings_stack.setCurrentIndex(index)
-
-    def conn_widget(self):
-        """Панель настроек подключения."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-        self.host_edit = QLineEdit('localhost')
-        self.port_edit = QLineEdit('5433')
-        self.db_edit = QLineEdit()
-        self.user_edit = QLineEdit()
-        self.pass_edit = QLineEdit()
-        self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addRow("Host", self.host_edit)
-        layout.addRow("Port", self.port_edit)
-        layout.addRow("Database", self.db_edit)
-        layout.addRow("User", self.user_edit)
-        layout.addRow("Password", self.pass_edit)
-        return widget
-
-    def license_widget(self):
-        """Панель с лицензией."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        self.license_edit = QTextEdit()
-        layout.addWidget(QLabel("Лицензионный ключ или информация:"))
-        layout.addWidget(self.license_edit)
-        return widget
-
-    def llm_widget(self):
-        """Панель LLM (настройки модели)."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-        self.llm_api_url = QLineEdit()
-        self.llm_api_key = QLineEdit()
-        layout.addRow("API URL", self.llm_api_url)
-        layout.addRow("API KEY", self.llm_api_key)
-        return widget
-
-
-    def get_conn_params(self):
-        """Всегда возвращает параметры прямо из полей ввода."""
-        return {
-            "host": self.host_edit.text(),
-            "port": self.port_edit.text(),
-            "dbname": self.db_edit.text(),
-            "user": self.user_edit.text(),
-            "password": self.pass_edit.text()
-        }
-
-    def info_widget(self):
-        """Панель с общими сведениями"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        info = QLabel(
-            "<b>Имя приложения</b>: DWH Release Builder<br>"
-            "<b>Версия</b>: 1.0.0<br>"
-            "<b>Автор</b>: SpaceKnot<br>"
-            "&copy;2025"
-        )
-        info.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(info)
-        layout.addStretch(1)
-        return widget
-
-
-
-DEFAULT_COLUMNS = ['Тип объекта БД', 'Якорь парсера', 'Шаблон папки', 'Шаблон имени файла']
+DEFAULT_COLUMNS = ['Тип объекта', 'Якорь парсера', 'Шаблон папки', 'Шаблон файла']
+DB_PATH = "rules_data.duckdb"
 
 class RulesTab(QWidget):
     """Вкладка для таблицы с правилами, загрузки/сохранения, импорта/экспорта."""
@@ -177,8 +77,10 @@ class RulesTab(QWidget):
 
     def __init__(self, settings_tab=None):
         super().__init__()
+        self.settings_tab = settings_tab
         self.init_ui()
-        self.settings_tab = SettingsTab()
+        self.init_db()
+        self.load_from_duckdb()  # Автозагрузка при запуске
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -186,10 +88,12 @@ class RulesTab(QWidget):
 
         self.load_csv_btn = QPushButton("Загрузить из CSV")
         self.save_csv_btn = QPushButton("Сохранить в CSV")
+        self.save_pg_btn = QPushButton("Сохранить в БД")
         self.load_pg_btn = QPushButton("Загрузить из БД")
 
         btn_layout.addWidget(self.load_csv_btn)
         btn_layout.addWidget(self.save_csv_btn)
+        btn_layout.addWidget(self.save_pg_btn)
         btn_layout.addWidget(self.load_pg_btn)
 
         self.table = QTableWidget()
@@ -203,11 +107,25 @@ class RulesTab(QWidget):
         layout.addLayout(btn_layout)
         layout.addWidget(self.table)
 
+        self.setLayout(layout)
+
         # Биндинг кнопок
         self.load_csv_btn.clicked.connect(self.load_from_csv)
         self.save_csv_btn.clicked.connect(self.save_to_csv)
-        self.load_pg_btn.clicked.connect(self.load_from_postgres)
+        self.save_pg_btn.clicked.connect(self.save_to_duckdb)
+        self.load_pg_btn.clicked.connect(self.load_from_duckdb)
 
+    def init_db(self):
+        self.connection = duckdb.connect(DB_PATH)
+        fields = ', '.join([f'"{col}" VARCHAR' for col in DEFAULT_COLUMNS])
+        self.connection.execute(f"""
+            CREATE TABLE IF NOT EXISTS rules (
+                "Тип объекта" TEXT,
+                "Якорь парсера" TEXT,
+                "Шаблон папки" TEXT,
+                "Шаблон файла" TEXT
+            );
+            """)  # DuckDB игнорирует AUTOINCREMENT
 
     def show_context_menu(self, pos):
         menu = QMenu()
@@ -218,12 +136,10 @@ class RulesTab(QWidget):
 
         sel_items = self.table.selectedItems()
         sel_rows = set(i.row() for i in sel_items)
-        sel_cols = set(i.column() for i in sel_items)
 
         if action == add_row:
             self.add_row()
-        elif action == del_row:
-            # Разрешаем удалять только если выбрана строка
+        elif action == del_row and sel_rows:
             self.delete_row(list(sel_rows)[0])
         elif action == clear_all:
             self.table.setRowCount(0)
@@ -239,125 +155,183 @@ class RulesTab(QWidget):
     def delete_row(self, row):
         self.table.removeRow(row)
 
+    def save_to_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить в CSV", "", "CSV Files (*.csv)")
+        if not path:
+            return
+        with open(path, "w", newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(DEFAULT_COLUMNS)
+            for row in range(self.table.rowCount()):
+                writer.writerow([self.table.item(row, col).text() if self.table.item(row, col) else ''
+                                 for col in range(self.table.columnCount())])
 
     def load_from_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Открыть CSV", "", "CSV (*.csv)")
+        path, _ = QFileDialog.getOpenFileName(self, "Загрузить из CSV", "", "CSV Files (*.csv)")
         if not path:
             return
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                headers = next(reader)
-                self.table.setColumnCount(len(headers))
-                self.table.setHorizontalHeaderLabels(headers)
-                self.table.setRowCount(0)
-                for row_data in reader:
-                    row = self.table.rowCount()
-                    self.table.insertRow(row)
-                    for col, val in enumerate(row_data):
-                        self.table.setItem(row, col, QTableWidgetItem(val))
-            QMessageBox.information(self, "Успех", "Данные загружены из CSV")
-        except Exception as e:
-            import traceback
-            QMessageBox.critical(self, "Ошибка", f"{e}\n{traceback.format_exc()}")
-
-    def save_to_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить CSV", "", "CSV (*.csv)")
-        if not path:
-            return
-        try:
-            with open(path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                headers = [self.table.horizontalHeaderItem(col).text() if self.table.horizontalHeaderItem(
-                    col) else f"col{col + 1}"
-                           for col in range(self.table.columnCount())]
-                writer.writerow(headers)
-                for row in range(self.table.rowCount()):
-                    row_data = [
-                        self.table.item(row, col).text() if self.table.item(row, col) else ''
-                        for col in range(self.table.columnCount())
-                    ]
-                    writer.writerow(row_data)
-            QMessageBox.information(self, "Успех", "Данные сохранены в CSV")
-        except Exception as e:
-            import traceback
-            QMessageBox.critical(self, "Ошибка", f"{e}\n{traceback.format_exc()}")
-
-    def load_from_postgres(self):
-
-        params = self.settings_tab.get_conn_params()
-        print(params)
-        if not params:
-            QMessageBox.warning(self, "ВНИМАНИЕ!", "Параметры подключения к БД не заданы.")
-            return
-
-        try:
-            conn = psycopg2.connect(**params)
-            cursor = conn.cursor()
-            cursor.execute("SELECT type, anchor, folder_template, file_template FROM rules_table")
-            rows = cursor.fetchall()
+        with open(path, "r", newline='', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            headers = next(reader)
+            if headers != DEFAULT_COLUMNS:
+                QMessageBox.warning(self, "Ошибка", "Неверные заголовки столбцов в файле!")
+                return
             self.table.setRowCount(0)
-            self.table.setColumnCount(len(DEFAULT_COLUMNS))
-            self.table.setHorizontalHeaderLabels(DEFAULT_COLUMNS)
-            for r, row_data in enumerate(rows):
-                self.table.insertRow(r)
-                for c, value in enumerate(row_data):
-                    self.table.setItem(r, c, QTableWidgetItem(str(value)))
-            cursor.close()
-            conn.close()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка БД", f"Ошибка при загрузке правил:\n{e}")
+            for row_data in reader:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                for col, value in enumerate(row_data):
+                    self.table.setItem(row, col, QTableWidgetItem(value))
+
+    def save_to_duckdb(self):
+        self.connection.execute('TRUNCATE rules')
+        try:
+            for row in range(self.table.rowCount()):
+                row_data = []
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row, col)
+                    row_data.append(item.text() if item else None)
+
+                # Строгая проверка совпадения столбцов и данных
+                if len(row_data) != len(DEFAULT_COLUMNS):
+                    print(f"Ошибка: размер данных не совпадает с количеством колонок в DEFAULT_COLUMNS")
+                    continue
+
+                placeholders = ', '.join(['?'] * len(DEFAULT_COLUMNS))
+                columns_sql = ', '.join([f'"{c}"' for c in DEFAULT_COLUMNS])
+                query = f'INSERT INTO rules ({columns_sql}) VALUES ({placeholders})'
+                try:
+                    self.connection.execute(query, row_data)
+                except Exception as db_err:
+                    print(f"Ошибка запроса к БД: {db_err}")
+
+            self.connection.commit()
+            QMessageBox.information(self, "Готово", "Данные успешно сохранены.")
+        except Exception as ex:
+            QMessageBox.information(self, "ВНИМАНИЕ!", f"Ошибка:{ex}")
+
+    def load_from_duckdb(self):
+        self.table.setRowCount(0)
+        try:
+            columns_sql = ', '.join([f'"{c}"' for c in DEFAULT_COLUMNS])
+            cursor = self.connection.execute(f"SELECT {columns_sql} FROM rules")
+            for row_data in cursor.fetchall():
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+                for col, value in enumerate(row_data):
+                    self.table.setItem(row, col, QTableWidgetItem(str(value) if value else ''))
+        except duckdb.Error as e:
+            print("Ошибка при загрузке из duckdb:", str(e))
+
+    def closeEvent(self, event):
+        # Важно!
+
+        self.save_to_duck_db()
+        self.connection.close()
+        super().closeEvent(event)
 
 
+class SettingsTab(QWidget):
+    """Вкладка Настройки без меню Подключения!"""
+    def __init__(self):
+        super().__init__()
+        self.connection = duckdb.connect("settings.db")
+        self.create_settings_table()
+        main_layout = QHBoxLayout()
+        self.menu_list = QListWidget()
+        self.menu_list.setMaximumWidth(180)
+        self.menu_list.addItem("Лицензия")
+        self.menu_list.addItem("LLM")
+        self.menu_list.addItem("Общие сведения")
+        self.menu_list.currentRowChanged.connect(self.switch_settings)
+        self.settings_stack = QStackedWidget()
+        self.settings_stack.addWidget(self.license_widget())
+        self.settings_stack.addWidget(self.llm_widget())
+        self.settings_stack.addWidget(self.info_widget())
+        main_layout.addWidget(self.menu_list)
+        main_layout.addWidget(self.settings_stack)
+        self.setLayout(main_layout)
+        self.menu_list.setCurrentRow(0)
+        self.load_settings()
 
+    def create_settings_table(self):
+        self.connection.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key VARCHAR PRIMARY KEY,
+            value VARCHAR
+        )
+        """)
 
+    def load_settings(self):
+        # пример: загружать ключи для лицензии и LLM
+        cursor = self.connection.execute("SELECT key, value FROM settings")
+        data = dict(cursor.fetchall())
+        # используйте data['license'] / data['llm'] по месту
+
+    def switch_settings(self, index):
+        self.settings_stack.setCurrentIndex(index)
+
+    def license_widget(self):
+        w = QWidget()
+        layout = QVBoxLayout()
+        self.license_edit = QLineEdit()
+        btn_save = QPushButton("Сохранить лицензию")
+        btn_save.clicked.connect(self.save_license)
+        layout.addWidget(QLabel("Лицензия:"))
+        layout.addWidget(self.license_edit)
+        layout.addWidget(btn_save)
+        w.setLayout(layout)
+        return w
+
+    def save_license(self):
+        text = self.license_edit.text()
+        self.connection.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", ("license", text))
+        self.connection.commit()
+        QMessageBox.information(self, "Готово", "Лицензия сохранена.")
+
+    def llm_widget(self):
+        w = QWidget()
+        layout = QVBoxLayout()
+        self.llm_edit = QLineEdit()
+        btn_save = QPushButton("Сохранить LLM")
+        btn_save.clicked.connect(self.save_llm)
+        layout.addWidget(QLabel("LLM ключ:"))
+        layout.addWidget(self.llm_edit)
+        layout.addWidget(btn_save)
+        w.setLayout(layout)
+        return w
+
+    def save_llm(self):
+        text = self.llm_edit.text()
+        self.connection.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", ("llm", text))
+        self.connection.commit()
+        QMessageBox.information(self, "Готово", "LLM ключ сохранен.")
+
+    def info_widget(self):
+        w = QWidget()
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Общие сведения о программе"))
+        w.setLayout(layout)
+        return w
+
+# ------ Заглушки для остальных вкладок:
 class ReleaseBuildTab(QWidget):
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout()
-        self.label = QLabel("Предпросмотр релизных блоков и итоговой структуры")
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.build_btn = QPushButton("Собрать релиз")
-        layout.addWidget(self.label)
-        layout.addWidget(self.build_btn)
-        layout.addWidget(QLabel("Лог предсборки:"))
-
-        layout.addWidget(self.log_text)
-        self.setLayout(layout)
-
-        # TODO: реализовать предпросмотр структуры, лог ошибок
-
+        self.setLayout(QVBoxLayout())
 class DependenciesTab(QWidget):
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout()
-        label = QLabel("Зависимости: структура объектов и дагов")
-        # Здесь позже будет визуализация lineage
-        layout.addWidget(label)
-        self.setLayout(layout)
-
+        self.setLayout(QVBoxLayout())
 class LogTab(QWidget):
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout()
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        layout.addWidget(QLabel("Лог событий"))
-        layout.addWidget(self.log_area)
-        self.setLayout(layout)
+        self.setLayout(QVBoxLayout())
+    def add_log(self, text):
+        pass
 
-    def add_log(self, message):
-        self.log_area.append(message)
-
-
-
-
-def main():
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     win = ReleaseBuilderApp()
     win.show()
     sys.exit(app.exec())
-
-if __name__ == "__main__":
-    main()
