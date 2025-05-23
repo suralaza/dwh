@@ -60,7 +60,7 @@ def load_core():
 
  
 
-    path_file1 = '/opt/airflow/dags/sql/directum/create_wrk_v_dctm_job_package.sql'
+    path_file1 = '/opt/airflow/dags/models/{dag_id}/create_wrk_v_dctm_job_package.sql'
 
     path_file2 = '/opt/airflow/dags/sql/directum/load_core_dctm_job_package.sql'
 

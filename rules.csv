@@ -1,8 +1,7 @@
 Тип объекта,Якорь парсера,Шаблон папки,Шаблон файла
-model,CREATE TABLE grp_wrk,./dags/models/{stream},create_{schema}_{table}.sql
-model,CREATE VIEW grp_wrk,./dags/models/{stream},create_{schema}_{table}.sql
-views,CREATE MATERIALIZED VIEW,./scripts/ddl/{schema}/{type_obj},{table}.sql
-functions,CREATE OR REPLACE FUNCTION,./scripts/ddl/{schema}/{type_obj},{table}.sql
-loader,f_scd1_load,./dags/models/{stream},load_{table}.sql
-loader,f_sat_load,./dags/models/{stream},load_{table}.sql
-dag,--DAG,./dags,{dag_id}.py
+model,--model,./khd/ddl/models/{dag_id},create_{schema}_{obj}.sql
+views,--ddl,./khd/ddl/{schema},{obj}.sql
+functions,--ddl,./khd/ddl/{schema},{obj}.sql
+loader,--loader,./khd/ddl/models/{dag_id},load_{schema}_{obj}.sql
+dag,--dag,./dags,{dag_id}.py
+tables,--ddl,./khd/ddl/{schema},{obj}.sql
