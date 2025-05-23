@@ -1,9 +1,11 @@
-import sys
-import csv
+import sys,os
+import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QStackedWidget, QListWidget, QFileDialog,
     QApplication, QMainWindow, QFormLayout, QLineEdit, QTextEdit, QMessageBox, QHeaderView, QListWidgetItem,
-    QMenu, QTableWidget, QTableWidgetItem, QTabWidget, QInputDialog
+    QMenu, QTableWidget, QTableWidgetItem, QTabWidget, QInputDialog,QCheckBox, QGroupBox,
+    QTreeWidget,
+    QTreeWidgetItem,  QPushButton, QComboBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -36,9 +38,6 @@ class ReleaseBuilderApp(QMainWindow):
         self.file_upload_tab.file_uploaded.connect(
             lambda fname: self.logger.add_log(f"Загружен файл: {fname}")
         )
-        self.rules_mask_tab.add_rules.connect(
-            lambda val: self.logger.add_log(f"Правила: {val}")
-        )
 
 class FileUploadTab(QWidget):
     file_uploaded = pyqtSignal(str)
@@ -67,108 +66,208 @@ class FileUploadTab(QWidget):
                     self.file_uploaded.emit(f)
 
 
-DEFAULT_COLUMNS = ['Тип объекта', 'Якорь парсера', 'Шаблон папки', 'Шаблон файла']
+DEFAULTTYPES = ["doc", "service", "src", "other"]
+ANCHORVARIABLES = 'header', 'footer'
+
+class AnchorVariableWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QHBoxLayout(self)
+        self.nameinput = QLineEdit()
+        self.nameinput.setPlaceholderText("Название переменной")
+        self.startswithinput = QLineEdit()
+        self.startswithinput.setPlaceholderText("Начинается с...")
+        self.layout.addWidget(QLabel("Переменная"))
+        self.layout.addWidget(self.nameinput)
+        self.layout.addWidget(QLabel("Начинается с"))
+        self.layout.addWidget(self.startswithinput)
+        self.setLayout(self.layout)
+    def get(self):
+        return {
+            "name": self.nameinput.text(),
+            "startswith": self.startswithinput.text()
+        }
+    def set(self, data):
+        self.nameinput.setText(data.get("name", ""))
+        self.startswithinput.setText(data.get("startswith", ""))
+
+class RuleFormWidget(QGroupBox):
+    def __init__(self, parent=None):
+        super().__init__("Параметры папки", parent)
+        layout = QVBoxLayout(self)
+        # Тип объекта
+        self.typebox = QComboBox()
+        self.typebox.addItems(DEFAULTTYPES)
+        layout.addWidget(QLabel("Тип объекта"))
+        layout.addWidget(self.typebox)
+
+        # Якорь парсера
+        self.anchorinput = QLineEdit()
+        self.anchorinput.setPlaceholderText("Якорь парсера")
+        layout.addWidget(QLabel("Якорь парсера"))
+        layout.addWidget(self.anchorinput)
+
+        # Переменные header/footer
+        varlayout = QVBoxLayout()
+        self.varcheckboxes = {}
+        self.varlineedits = {}
+        for v in ANCHORVARIABLES:
+            hl = QHBoxLayout()
+            cb = QCheckBox()
+            le = QLineEdit()
+            le.setPlaceholderText(f"Шаблон для {v}")
+            hl.addWidget(cb)
+            hl.addWidget(QLabel(v))
+            hl.addWidget(le)
+            self.varcheckboxesv = cb
+            self.varlineedits[v] = le
+            varlayout.addLayout(hl)
+        layout.addWidget(QLabel("Переменные"))
+        layout.addLayout(varlayout)
+
+        # Переменные якоря: кнопка добавить, список и кнопка очистить
+        self.anchorvars = []
+        self.anchorvarlayout = QVBoxLayout()
+        anchorgroup = QGroupBox("Переменные якоря")
+        anchorgroup.setLayout(self.anchorvarlayout)
+        addbtn = QPushButton("Добавить переменную якоря")
+        addbtn.clicked.connect(self.addanchorvar)
+        clearbtn = QPushButton("Очистить переменные якоря")
+        clearbtn.clicked.connect(self.clearanchorvars)
+        btnhbox = QHBoxLayout()
+        btnhbox.addWidget(addbtn)
+        btnhbox.addWidget(clearbtn)
+        layout.addWidget(anchorgroup)
+        layout.addLayout(btnhbox)
+        self.setLayout(layout)
+    def addanchorvar(self):
+        w = AnchorVariableWidget()
+        self.anchorvarlayout.addWidget(w)
+        self.anchorvars.append(w)
+    def clearanchorvars(self):
+        for w in self.anchorvars:
+            w.setParent(None)
+        self.anchorvars.clear()
+    def getdata(self):
+        return {
+            "type": self.typebox.currentText(),
+            "anchor": self.anchorinput.text(),
+            "variables": {
+                v: {
+                    "use": self.varcheckboxesv.isChecked(),
+                    "template": self.varlineedits[v].text()
+                } for v in ANCHORVARIABLES
+            },
+            "anchorvars": [w.get() for w in self.anchorvars]
+        }
+
+    def setdata(self, data):
+        self.typebox.setCurrentText(data.get("type", DEFAULTTYPES[0]))
+        self.anchorinput.setText(data.get("anchor", ""))
+        varsdata = data.get("variables", {})
+        for v in ANCHORVARIABLES:
+            dct = varsdata.get(v, {})
+            self.varcheckboxesv.setChecked(dct.get("use", False))
+            self.varlineedits[v].setText(dct.get("template", ""))
+        self.clearanchorvars()
+        for vdict in data.get("anchorvars", ):
+            self.addanchorvar()
+            self.anchorvars[-1].set(vdict)
 
 class RulesTab(QWidget):
-    """Вкладка "Правила" — слева меню действий, справа постоянно таблица"""
-    add_rules = pyqtSignal(str)
-    def __init__(self, settingstab=None):
-        super().__init__()
-        self.settingstab = settingstab
-        self.initui()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.projectfolder = ""
+        self.folderforms = {}  # путь: RuleFormWidget
 
-
-    def initui(self):
         mainlayout = QHBoxLayout(self)
 
-        # Слева меню с действиями
-        self.menulist = QListWidget()
-        self.menulist.setMaximumWidth(180)
-        self.menulist.addItem("Загрузить из CSV")  # 0
-        self.menulist.addItem("Сохранить в CSV")   # 1
-        self.menulist.currentRowChanged.connect(self.menuaction)
-        mainlayout.addWidget(self.menulist)
+        # Слева — меню действий
+        self.menu = QListWidget()
+        self.menu.addItem("Репозиторий Git")
+        self.menu.addItem("Редактировать правила")
+        self.menu.addItem("Очистить правила")
+        self.menu.addItem("Сохранить в Json")
+        self.menu.addItem("Загрузить из Json")
+        self.menu.currentRowChanged.connect(self.menuaction)
+        self.menu.setMaximumWidth(220)
+        mainlayout.addWidget(self.menu)
 
-        # Справа постоянно таблица правил
-        self.table = QTableWidget()
-        self.table.setColumnCount(len(DEFAULT_COLUMNS))
-        self.table.setHorizontalHeaderLabels(DEFAULT_COLUMNS)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.AllEditTriggers)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self.show_context_menu)
-        mainlayout.addWidget(self.table)
-
+        # Справа — дерево и параметры
+        self.rightvbox = QVBoxLayout()
+        # Дерево папок/файлов
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Папка / файл", "Параметры"])
+        self.tree.itemSelectionChanged.connect(self.onitemselected)
+        self.rightvbox.addWidget(self.tree, stretch=3)
+        # Под деревом — скролл для формы активной папки
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.formarea = QWidget()
+        self.vboxform = QVBoxLayout(self.formarea)
+        self.scroll.setWidget(self.formarea)
+        self.rightvbox.addWidget(self.scroll, stretch=2)
+        mainlayout.addLayout(self.rightvbox)
         self.setLayout(mainlayout)
 
     def menuaction(self, index):
-        if index == 0:
-            self.load_from_csv()
-        elif index == 1:
-            self.save_to_csv()
-
-        # Сбросить выделение, чтобы действия можно было повторять многократно кликом
-        self.menulist.clearSelection()
-
-
-
-    def show_context_menu(self, pos):
-        menu = QMenu()
-        add_row = menu.addAction("Добавить строку")
-        del_row = menu.addAction("Удалить строку")
-        clear_all = menu.addAction("Очистить всё")
-        action = menu.exec(self.table.viewport().mapToGlobal(pos))
-
-        sel_items = self.table.selectedItems()
-        sel_rows = set(i.row() for i in sel_items)
-
-        if action == add_row:
-            self.add_row()
-        elif action == del_row and sel_rows:
-            self.delete_row(list(sel_rows)[0])
-        elif action == clear_all:
-            self.table.setRowCount(0)
-            self.table.setColumnCount(len(DEFAULT_COLUMNS))
-            self.table.setHorizontalHeaderLabels(DEFAULT_COLUMNS)
-
-    def add_row(self):
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        for col in range(self.table.columnCount()):
-            self.table.setItem(row, col, QTableWidgetItem(""))
-
-    def delete_row(self, row):
-        self.table.removeRow(row)
-
-    def save_to_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить в CSV", "", "CSV Files (*.csv)")
-        if not path:
-            return
-        with open(path, "w", newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(DEFAULT_COLUMNS)
-            for row in range(self.table.rowCount()):
-                writer.writerow([self.table.item(row, col).text() if self.table.item(row, col) else ''
-                                 for col in range(self.table.columnCount())])
-
-    def load_from_csv(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Загрузить из CSV", "", "CSV Files (*.csv)")
-        if not path:
-            return
-        with open(path, "r", newline='', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            headers = next(reader)
-            if headers != DEFAULT_COLUMNS:
-                QMessageBox.warning(self, "Ошибка", "Неверные заголовки столбцов в файле!")
+        if index == 0:  # Репозиторий Git
+            folder = QFileDialog.getExistingDirectory(self, "Выберите папку репозитория Git")
+            if not folder: return
+            self.projectfolder = folder
+            self.loadtree()
+        elif index == 1:  # Редактировать правила
+            self.expandtreeall()
+        elif index == 2:  # Очистить правила
+            if QMessageBox.question(self, "Очистка", "Удалить все правила?") != QMessageBox.StandardButton.Yes:
                 return
-            self.table.setRowCount(0)
-            for row_data in reader:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                for col, value in enumerate(row_data):
-                    self.table.setItem(row, col, QTableWidgetItem(value))
+            for w in self.folderforms.values():
+                w.setdata({})
+        elif index == 3:  # Сохранить в Json
+            path, = QFileDialog.getSaveFileName(self, "Сохранить структуру", "", "JSON (.json)")
+            if path:
+                self.save_to_json(path)
+        elif index == 4:  # Загрузить из Json
+            path, _ = QFileDialog.getOpenFileName(self, "Загрузить структуру", "", "JSON (.json)")
+            if path:
+                self.loadfromjson(path)
+        self.menu.clearSelection()
 
+    def loadtree(self):
+        self.tree.clear()
+        self.folderforms.clear()
 
+        def additems(parentitem, currentpath):
+            for name in sorted(os.listdir(currentpath)):
+                fullpath = os.path.join(currentpath, name)
+                isdir = os.path.isdir(fullpath)
+                item = QTreeWidgetItem([name])
+                parentitem.addChild(item)
+                # форма только к папкам
+                if isdir:
+                    relpath = os.path.relpath(fullpath, self.projectfolder)
+                    w = RuleFormWidget()
+                    self.folderformsrel_path = w
+                    item.setData(0, Qt.ItemDataRole.UserRole, relpath)
+                    additems(item, fullpath)
+        rootitem = QTreeWidgetItem(os.path.basename(self.project_folder))
+        w = RuleFormWidget()
+        self.folderforms["."] = w
+        rootitem.setData(0, Qt.ItemDataRole.UserRole, ".")
+        additems(rootitem, self.projectfolder)
+        self.tree.addTopLevelItem(rootitem)
+        rootitem.setExpanded(True)
+        self.tree.setCurrentItem(rootitem)
+        self.onitemselected()
 
+    def onitemselected(self):
+        print("Выбран элемент в дереве!")
+
+    def expandtreeall(self):
+        def recexpand(item):
+            item.setExpanded(True)
+            for i in range(item.childCount()):
+                recexpand(item.child(i))
 
 class SettingsTab(QWidget):
     """Вкладка Настройки без меню Подключения!"""
