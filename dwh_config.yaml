@@ -1,0 +1,33 @@
+# Пример конфига dwh_config.yaml
+
+input_release_path: ./releases/RFC0012345/RFC0012345.sql
+header_template_path: ./templates/header.sql
+footer_template_path: ./templates/footer.sql
+
+output_base_path: ./khd/ddl
+dag_output_path: ./dags
+dag_template_path: ./templates/custom_dag_template.py
+
+patterns:
+  ddl_path: "{base}/{schema}/{object_type}/{object_name}.sql"
+  model_path: "{base}/models/{dag_id}/create_{schema}_{object_name}.sql"
+  loader_path: "{base}/models/{dag_id}/load_{schema}_{object_name}.sql"
+  dag_python_file: "{dag_folder}/{dag_id}.py"
+
+object_type_map:
+  table: tables
+  view: views
+  materialized_view: materialized_views
+  function: functions
+  procedure: procs
+
+parse_blocks:
+  - ddl
+  - model
+  - loader
+  - dag
+
+options:
+  skip_drop_statements: false
+  encoding: utf-8
+  block_patterns_path: "./block_patterns.yaml"

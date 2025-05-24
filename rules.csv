@@ -1,7 +1,0 @@
-Тип объекта,Якорь парсера,Шаблон папки,Шаблон файла
-model,--model,./khd/ddl/models/{dag_id},create_{schema}_{obj}.sql
-views,--ddl,./khd/ddl/{schema}/{obj_type},{obj}.sql
-functions,--ddl,./khd/ddl/{schema}/{obj_type},{obj}.sql
-loader,--loader,./khd/ddl/models/{dag_id},load_{schema}_{obj}.sql
-dag,--dag,./dags,{dag_id}.py
-tables,--ddl,./khd/ddl/{schema}/{obj_type},{obj}.sql

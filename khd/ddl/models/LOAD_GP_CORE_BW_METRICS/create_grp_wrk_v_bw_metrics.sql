@@ -5,4 +5,5 @@ select
 guid as metric_id,
 created_at,
 value
-from grp_ods_bw.kurl_im;
+from grp_ods_bw.kurl_im
+where created_at> {{Param_in}}::date;

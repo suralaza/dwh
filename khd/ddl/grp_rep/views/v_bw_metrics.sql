@@ -6,5 +6,3 @@ created_at,
 VALUE
 from grp_core.bw_metrics
 where created_at>current_date - 7;
-
-select * from dwh_meta.f_grant_default_privs('grp_rep','v_bw_metrics');
