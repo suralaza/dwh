@@ -44,15 +44,15 @@ def task_failure_callback(context):
 
 @dag(
 
-    dag_id = 'LOAD_GP_CORE_DCTM_JOB_PACKAGE',
+    dag_id = '',
 
     default_args = default_args,
 
-    schedule_interval = '30 2 * * *', # '30 2 * * *' daily at 5.30 am moscow time
+    schedule_interval = None
 
     catchup = False,
 
-    tags = ["dctm", "core"]
+    tags = []
 
 )
 
@@ -60,13 +60,10 @@ def load_core():
 
  
 
-    path_file1 = '/opt/airflow/dags/models/{dag_id}/create_wrk_v_dctm_job_package.sql'
+    path_file1 = '/opt/airflow/dags/models/{stream}/{model}.sql'
+    path_file1 = '/opt/airflow/dags/models/{stream}/{loader}.sql'
 
-    path_file2 = '/opt/airflow/dags/sql/directum/load_core_dctm_job_package.sql'
-
-    path_file3 = '/opt/airflow/dags/sql/directum/create_wrk_v_dctm_packages.sql'
-
-    path_file4 = '/opt/airflow/dags/sql/directum/load_core_dctm_packages.sql'
+    conn_id = 'greenplum'
 
  
 
@@ -74,23 +71,7 @@ def load_core():
 
     sql = """
 
-    with res as (
 
-        select object_name
-
-        from grp_sys.etl_log_status  
-
-        where object_name in ('grp_ods_dctm.job_package_im','grp_ods_dctm.packages_im')
-
-            and upd_dttm::date = current_date
-
-            and status = 'FINISH'
-
-        group by object_name
-
-    )
-
-    select case when count(object_name) = 2 then 1 else null end as req from res
 
       """
 
@@ -108,11 +89,11 @@ def load_core():
 
       
 
-    sensor2 = SqlSensor(       
+    sensor = SqlSensor(       
 
         task_id='sql_sensor',
 
-        conn_id='greenplum',
+        conn_id=conn_id,
 
         sql=sql,
 
@@ -128,11 +109,11 @@ def load_core():
 
  
 
-    create_wrk_v_dctm_job_package = PostgresOperator(
+    {{model}} = PostgresOperator(
 
-        task_id='create_wrk_v_dctm_job_package',
+        task_id='{{model}}',
 
-        postgres_conn_id='greenplum',
+        postgres_conn_id=conn_id,
 
         sql=read_text(path_file1),
 
@@ -140,41 +121,17 @@ def load_core():
 
    
 
-    create_wrk_v_dctm_packages = PostgresOperator(
+    {{loader}} = PostgresOperator(
 
-        task_id='create_wrk_v_dctm_packages',
+        task_id='{{loader}}',
 
-        postgres_conn_id='greenplum',
-
-        sql=read_text(path_file3),
-
-    )
-
- 
-
-  
-
-    load_core_dctm_job_package = PostgresOperator(
-
-        task_id='load_core_dctm_job_package',
-
-        postgres_conn_id='greenplum',
+        postgres_conn_id=conn_id,
 
         sql=read_text(path_file2),
 
     )
 
-   
 
-    load_core_dctm_packages = PostgresOperator(
-
-        task_id='load_core_dctm_packages',
-
-        postgres_conn_id='greenplum',
-
-        sql=read_text(path_file4),
-
-    )
 
  
 
@@ -190,7 +147,7 @@ def load_core():
 
  
 
-        postgres = PostgresHook(postgres_conn_id='greenplum')
+        postgres = PostgresHook(postgres_conn_id=conn_id)
 
         conn = postgres.get_conn()
 
@@ -204,7 +161,7 @@ def load_core():
 
  
 
-    schema = 'grp_core'
+    schema = {{schema}}
 
     dag_id = "{{ dag.dag_id }}"
 
@@ -212,29 +169,23 @@ def load_core():
 
     chain(
 
-        sensor2,
+        sensor,
 
         [
 
-            create_wrk_v_dctm_job_package,
-
-            create_wrk_v_dctm_packages
+            {{model}}
 
         ],
 
         [
 
-            load_core_dctm_job_package,
-
-            load_core_dctm_packages
+            {{loader}}
 
         ],
 
         [
 
-            log_status(schema, 'dctm_job_package', dag_id),
-
-            log_status(schema, 'dctm_packages', dag_id),
+            log_status({{schema}}, '{{object_name}}', dag_id)
 
         ]
 

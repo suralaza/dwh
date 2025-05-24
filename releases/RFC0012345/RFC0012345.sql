@@ -1,4 +1,5 @@
 
+
 --dml
 create schema if not exists grp_ods_bw authorization by w_alrdt;
 grant all on schema grp_ods_bw to w_alrdt;
@@ -19,7 +20,7 @@ alter table grp_sys.etl_log_status rename to etl_log_status_old;
 --dml
 
 
---ddl
+--ddl grp_ods_bw.kurl_im
 drop table if exists grp_ods_bw.kurl_im;
 create table grp_ods_bw.kurl_im (
 guid text null,
@@ -27,12 +28,13 @@ created_at text null,
 value text NULL
 )
 distributed randomly;
+--
 
 select * from dwh_meta.f_grant_default_privs('grp_ods_bw','kurl_im');
---ddl
 
 
---ddl
+
+--ddl grp_core.bw_metrics
 drop table if exists grp_core.bw_metrics cascade;
 create table grp_core.bw_metrics (
 metric_id text null,
@@ -40,13 +42,14 @@ created_at text null,
 value text NULL
 )
 distributed by (metric_id);
+--
 
 select * from dwh_meta.f_grant_default_privs('grp_core','bw_metrics');
---ddl
 
 
---dag LOAD_GP_CORE_BW_METRICS
---model
+
+ 
+--model LOAD_GP_CORE_BW_METRICS grp_wrk.v_bw_metrics
 drop view if exists grp_wrk.v_bw_metrics;
 create view grp_wrk.v_bw_metrics
 AS
@@ -54,10 +57,11 @@ select
 guid as metric_id,
 created_at,
 value
-from grp_ods_bw.kurl_im;
+from grp_ods_bw.kurl_im
+where created_at> {{Param_in}}::date;
+--
 
-
---loader
+--loader LOAD_GP_CORE_BW_METRICS grp_core.bw_metrics
 select * from dwh_meta.f_scd1_load(
 'grp_wrk.v_bw_metrics',
 'grp_core.bw_metrics',
@@ -71,9 +75,9 @@ false,
 FALSE
 '',
 2);
---dag
+--
 
---ddl
+--ddl grp_rep.v_bw_metrics
 drop view if exists grp_rep.v_bw_metrics;
 create view grp_rep.v_bw_metrics AS
 select 
@@ -82,9 +86,11 @@ created_at,
 VALUE
 from grp_core.bw_metrics
 where created_at>current_date - 7;
+--
+
 
 select * from dwh_meta.f_grant_default_privs('grp_rep','v_bw_metrics');
---ddl
+
 
 
 
