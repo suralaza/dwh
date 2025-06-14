@@ -1,1 +1,1 @@
-select * from dwh_meta.f_grant_default_privs('{schema'}.'{object_name}');
+select * from dwh_meta.f_grant_default_privs('{schema}'.'{object_name}');

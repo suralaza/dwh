@@ -1,167 +1,259 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 
 import argparse
+import logging
 import yaml
 import os
 import re
 import sys
+from logger import log
+from typing import List, Dict, Any, Optional, Pattern
 
-class Colors:
-    HEADER = '\033[95m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-
-def log_success(msg):
-    print(f"{Colors.OKGREEN}[OK]{Colors.ENDC} {msg}")
-
-def log_warn(msg):
-    print(f"{Colors.WARNING}[WARN]{Colors.ENDC} {msg}")
-
-def log_error(msg):
-    print(f"{Colors.FAIL}[ERROR]{Colors.ENDC} {msg}")
 
 def load_yaml(path):
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"File not found: {path}")
+        return None
+    except yaml.YAMLError as e:
+        print(f"YAML error: {e}")
+        return None
+
+
+def env_subst(item: Any, context: dict) -> Any:
+    """Заменяет ${...} в строках на значения из context (рекурсивно)."""
+    if isinstance(item, str):
+        def repl(m):
+            keys = m.group(1).split(".")
+            val = context
+            for key in keys:
+                val = val.get(key)
+                if val is None:
+                    break
+            return str(val) if val is not None else m.group(0)
+
+        return re.sub(r"\${([a-zA-Z0-9_.]+)}", repl, item)
+    elif isinstance(item, dict):
+        return {k: env_subst(v, context) for k, v in item.items()}
+    elif isinstance(item, list):
+        return [env_subst(v, context) for v in item]
+    else:
+        return item
+
 
 def ensure_dirs(filepath):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-def parse_blocks_from_release(release_lines, block_patterns):
-    blocks = []
-    i = 0
-    while i < len(release_lines):
-        for pat in block_patterns:
-            beg_pat = re.compile(pat['begin'])
-            m = beg_pat.match(release_lines[i])
-            if m:
-                params = {}
-                if 'params' in pat:
-                    for idx, pname in enumerate(pat['params'], 1):
-                        params[pname] = m.group(idx)
-                content = []
-                i += 1
-                end_pat = re.compile(pat['end'])
-                while i < len(release_lines) and not end_pat.match(release_lines[i]):
-                    content.append(release_lines[i])
-                    i += 1
-                blocks.append({
-                    "type": pat["name"],
-                    "params": params,
-                    "content": '\n'.join(content).strip()
-                })
-                if i < len(release_lines) and end_pat.match(release_lines[i]):
-                    i += 1
-                break
-        else:
-            i += 1
-    return blocks
 
-def object_type_from_ddl(ddl_content):
-    m = re.search(r'create\s+(table|view|materialized\s+view|fuction|procedure)\s+', ddl_content, re.IGNORECASE)
+def read_file_lines(path, encoding="utf-8"):
+    with open(path, encoding=encoding) as f:
+        return [line.rstrip('\n') for line in f]
+
+
+def object_type_from_ddl(ddl_content, object_type_map):
+    """
+    Определяет тип объекта из DDL по блоку в parsing_config.yaml object_type_map .
+    Возвращает имя папки для сохранения файла согласно map.
+    """
+    ddl_content_nospace = ddl_content.replace("or replace", "")
+    # Ключи из user yaml могут быть с пробелами (external table), формируем regexp
+    types_pattern = '|'.join([
+        key.replace("_", r"\s+") for key in object_type_map.keys()
+    ])
+    regexp = r'create\s+(' + types_pattern + r')\s+'
+    m = re.search(regexp, ddl_content_nospace, re.IGNORECASE)
     if m:
-        return m.group(1).replace(" ", "_").lower()
+        ddl_type = m.group(1).replace(" ", "_").lower()
+        # Приводим map к такому же виду, чтобы искать ключ без багов
+        for k, v in object_type_map.items():
+            if ddl_type == k.replace(" ", "_").lower():
+                return v
     return "unknown"
 
-def parse_object_dot(obj):
-    parts = obj.split('.')
-    if len(parts) != 2:
-        return 'unknown', obj
-    return parts[0], parts[1]
 
-def render_path(pattern, **kwargs):
+def parse_object_dot(obj):
+    if obj and '.' in obj:
+        return obj.split('.', 1)
+    return 'unknown', obj
+
+
+def get_block_patterns(blocks_conf):
+    patterns = []
+    for block in blocks_conf:
+        patterns.append({
+            "name": block['name'],
+            "begin": re.compile(block['begin']),
+            "end": re.compile(block['end']),
+            "block_conf": block
+        })
+    return patterns
+
+
+def render_path(template, **kwargs):
+    # простая подстановка параметры вида {name}
     for k, v in kwargs.items():
-        pattern = pattern.replace(f"{{{k}}}", str(v))
-    return pattern
+        template = template.replace(f"{{{k}}}", str(v))
+    return template
+
+
+def apply_template(path, params, encoding="utf-8"):
+    if not path or not os.path.exists(path):
+        return ""
+    with open(path, encoding=encoding) as f:
+        template = f.read()
+    for k, v in params.items():
+        template = template.replace(f"{{{k}}}", str(v))
+    return template
+
+
+def parse_template(template, line):
+    if not isinstance(template, str):
+        # Исправление ошибки
+        logging.error(f"Expected a string for template, but got {type(template).__name__}")
+        raise TypeError(f"Expected a string for template, but got {type(template).__name__}")
+
+    # 1. Найти все {var} в шаблоне
+    var_matches = list(re.finditer(r"\{([^}]+)\}", template))
+
+    if not var_matches:
+        return {}
+
+    # Простая реализация парсинга строки для соответствия шаблону
+    result = {}
+    match_start = 0
+
+    for vm in var_matches:
+        # Получаем имя переменной
+        var_name = vm.group(1)
+
+        # Ожидаем, что мы найдем соответствующую часть строки
+        # Захватываем до следующего совпадения
+        segment = template[match_start:vm.start()]
+        match_end = line.find(segment, match_start)
+
+        if match_end == -1:
+            logging.error(f"Segment {segment} not found in line.")
+            raise ValueError(f"Segment {segment} not found in line.")
+
+        match_start = match_end + len(segment)
+        # Извлечение значений после совпадения
+        if match_start < len(line):
+            next_segment = template[vm.end():]
+            next_pos = line.find(next_segment, match_start)
+            value = line[match_start:next_pos] if next_pos != -1 else line[match_start:]
+            result[var_name] = value.strip()
+        else:
+            result[var_name] = None
+
+    return result
+
 
 def main():
-    parser = argparse.ArgumentParser(description="DWH Release Parser")
-    parser.add_argument('--config', '-c', required=True, help="Путь к dwh_config.yaml")
+    parser = argparse.ArgumentParser(description="DWH Release Builder")
+    parser.add_argument('--config', '-c', required=True, help="Путь к release_config.yaml")
     args = parser.parse_args()
 
-    config = load_yaml(args.config)
-    options = config.get("options", {})
-
-    block_patterns_path = options.get("block_patterns_path")
-    if not block_patterns_path:
-        log_error("В dwh_config.yaml не найден ключ options.block_patterns_path")
+    config_full = load_yaml(args.config)
+    if 'release_config' not in config_full or 'blocks' not in config_full:
+        log("release_config и blocks должны быть в корне yaml", "ERROR")
         sys.exit(1)
+    release_config = config_full['release_config']
+    blocks_conf = config_full['blocks']
 
-    release_path = config.get("input_release_path")
-    if not release_path:
-        log_error("В dwh_config.yaml не найден ключ input_release_path")
-        sys.exit(1)
+    # Контекст для env_subst
+    context = dict(release_config)
+    context["release_config"] = release_config
 
-    block_patterns = load_yaml(block_patterns_path)["block_patterns"]
+    # Подставим переменные окружения во всех полях конфигурации блоков
+    blocks_conf = env_subst(blocks_conf, context)
+    block_patterns = get_block_patterns(blocks_conf)
 
-    with open(release_path, encoding=options.get("encoding", "utf-8")) as f:
-        lines = [line.rstrip('\n') for line in f]
+    input_release_path = release_config['input_release_path']
+    options = release_config.get("options", {})
+    encoding = options.get("encoding", "utf-8")
 
-    output_base = config.get("output_base_path", "./khd/ddl")
-    dag_folder = config.get("dag_output_path", "./dags")
-    obj_map = config.get("object_type_map", {})
+    # Чтение строк исходного SQL-релиза
+    lines = read_file_lines(input_release_path, encoding)
+    n = len(lines)
+    i = 0
 
-    patterns = config["patterns"]
-    parse_block_types = set(config["parse_blocks"])
+    while i < n:
+        matched = False
+        for i, line in enumerate(lines):
+            print(line)
+            logging.info(f"Processing line {i}: {line.strip()}")
+            for pat in block_patterns:
+                try:
+                    match_vars = parse_template(pat['begin'].pattern, line.strip())
+                    if match_vars:
+                        matched = True
+                        block_conf = pat['block_conf']
+                        block_name = block_conf['name']
+                        content_lines = []
+                        i += 1
+                        # Ищем конец блока
+                        while i < n and not parse_template(pat['end'].template, lines[i].strip()):
+                            content_lines.append(lines[i])
+                            i += 1
+                        # Пропускаем END метку, если есть
+                        if i < n and parse_template(pat['end'].template, lines[i].strip()):
+                            i += 1
+                        content = "\n".join(content_lines).strip()
 
-    blocks = parse_blocks_from_release(lines, block_patterns)
+                        # Формируем параметры для путей
+                        base_params = {
+                            "base": release_config.get("output_base_path", ""),
+                            "dag_folder": release_config.get("dag_output_path", ""),
+                        }
+                        params = dict(base_params)
+                        params.update(match_vars)
 
-    for block in blocks:
-        btype = block["type"]
-        params = block["params"]
-        content = block["content"]
+                        # Подставляем object_type_map если нужно
+                        if "object_type_map" in block_conf and "object_type" in match_vars:
+                            ot_map = block_conf["object_type_map"]
+                            ot_raw = match_vars["object_type"].strip().lower()
+                            params["object_type"] = ot_map.get(ot_raw, ot_raw)
 
-        if btype not in parse_block_types:
-            continue
+                        # Формируем путь к итоговому файлу
+                        output_path_template = block_conf['output_path']['template']
+                        # Собираем значения для параметров шаблона
+                        output_path_param_values = []
+                        for pname in block_conf['output_path']['params']:
+                            output_path_param_values.append(params.get(pname, ""))
+                        # Делаем render
+                        output_path = output_path_template
+                        for pname, pval in zip(block_conf['output_path']['params'], output_path_param_values):
+                            output_path = output_path.replace("{" + pname + "}", pval)
+                        output_path = output_path.replace("//", "/")
+                        ensure_dirs(output_path)
 
-        if btype == "ddl":
-            schema, object_name = parse_object_dot(params["object"])
-            object_type = object_type_from_ddl(content)
-            subfolder = obj_map.get(object_type, object_type)
-            out_path = render_path(
-                patterns["ddl_path"],
-                base=output_base,
-                schema=schema,
-                object_type=subfolder,
-                object_name=object_name,
-            )
-        elif btype == "model":
+                        # Собираем header/footer, если есть
+                        header = ""
+                        header_template_path = block_conf.get("header_template_path")
+                        if header_template_path:
+                            header = apply_template(header_template_path, params)
+                        footer = ""
+                        footer_template_path = block_conf.get("footer_template_path")
+                        if footer_template_path:
+                            footer = apply_template(footer_template_path, params)
 
-            schema, object_name = parse_object_dot(params["object"])
-            dag_id = params["dag_id"]
-            out_path = render_path(
-                patterns["model_path"],
-                base=output_base,
-                dag_id=dag_id,
-                schema=schema,
-                object_name=object_name,
-            )
-        elif btype == "loader":
-            schema, object_name = parse_object_dot(params["object"])
-            dag_id = params.get("dag_id", "unknown")
-            out_path = render_path(
-                patterns["loader_path"],
-                base=output_base,
-                dag_id=dag_id,
-                schema=schema,
-                object_name=object_name,
-            )
-        elif btype == "dag":
-            dag_id = params.get("dag_id", "unknown")
-            out_path = render_path(
-                patterns["dag_python_file"],
-                dag_folder=dag_folder,
-                dag_id=dag_id
-            )
-        else:
-            continue
+                        # Записываем результат в файл
+                        with open(output_path, "w", encoding=encoding) as f:
+                            if header:
+                                f.write(header + "\n")
+                            f.write(content + "\n")
+                            if footer:
+                                f.write("\n" + footer)
+                        log(f"{block_name}  {output_path}", "INFO")
+                        break
+                    if not matched:
+                        i += 1
+                    print(match_vars)
+                except ValueError as e:
+                    logging.warning(str(e))
 
-        ensure_dirs(out_path)
-        with open(out_path, "w", encoding=options.get("encoding", "utf-8")) as outf:
-            outf.write(content.strip() + '\n')
-        log_success(f"{btype} → {out_path}")
 
 if __name__ == "__main__":
     main()
