@@ -1,0 +1,6 @@
+--Author: PodkorytovAS
+--Duration: 15 min
+--Chain: release file->dags
+
+SET ROLE w_alrdt;
+
