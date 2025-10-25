@@ -1,0 +1,224 @@
+from airflow import DAG
+from airflow.decorators import task, task_group
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.utils.dates import days_ago
+from airflow.utils.task_group import TaskGroup
+
+import httpx
+import asyncio
+from psycopg2.extras import execute_values
+from datetime import datetime, timedelta
+from typing import List, Tuple, Dict
+import json
+import os
+
+# Конфигурация
+API_URL = "http://msk-cpsba-app.alrosa.ru:10013/api/PriceCalculations/CalcPriceByValues"
+API_HEADERS = {"accept": "application/json", "Content-Type": "application/json"}
+GP_CONN_ID = "greenplum_cloud"
+
+batch_fetch_size = 10000
+api_workers = 50
+insert_batch_size = 5000
+request_timeout = 20
+
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id="load_stone_price_by_months",
+    default_args=default_args,
+    start_date=days_ago(1),
+    schedule_interval=None,
+    catchup=False,
+    max_active_runs=1,
+) as dag:
+
+    @task
+    def dump_source_to_file(date_from: str = None, date_to: str = None) -> str:
+        """
+        Читает исходные строки порциями и сохраняет их в /tmp/stone_src_all.jsonl
+        Каждая строка: {"product_id": ..., "create_date": ISO, "payload": {...}}
+        """
+        out_path = "/tmp/stone_src_all.jsonl"
+        # удалим старый файл, если есть
+        try:
+            os.remove(out_path)
+        except FileNotFoundError:
+            pass
+
+        pg = PostgresHook(postgres_conn_id=GP_CONN_ID)
+        conn = pg.get_conn()
+        cur = conn.cursor(name="src_cursor")
+
+        sql = """
+        SELECT product_id, create_date, weight, isBlackInclusions, isBGM,
+               quantityOfStones, color, qual, form, qualityGroup, fluor,
+               cavity, symmetryOut, polishOut, cutOut, hasCertificate
+        FROM source_table
+        WHERE (%s IS NULL OR create_date >= %s)
+          AND (%s IS NULL OR create_date < %s)
+        ORDER BY create_date
+        """
+        cur.execute(sql, (date_from, date_from, date_to, date_to))
+
+        with open(out_path, "w", encoding="utf-8") as fout:
+            while True:
+                rows = cur.fetchmany(batch_fetch_size)
+                if not rows:
+                    break
+                for r in rows:
+                    payload = {
+                        "priceListTypes": ["UPPInner", "UPPOuter", "UPPMin", "RAP"],
+                        "date": datetime.utcnow().isoformat() + "Z",
+                        "weight": float(r[2]) if r[2] is not None else None,
+                        "isBlackInclusions": bool(r[3]),
+                        "isBGM": bool(r[4]),
+                        "quantityOfStones": int(r[5]) if r[5] is not None else 1,
+                        "color": r[6],
+                        "qual": r[7],
+                        "form": r[8],
+                        "qualityGroup": r[9],
+                        "fluor": r[10],
+                        "cavity": r[11],
+                        "symmetryOut": r[12],
+                        "polishOut": r[13],
+                        "cutOut": r[14],
+                        "hasCertificate": bool(r[15]),
+                    }
+                    rec = {
+                        "product_id": r[0],
+                        "create_date": r[1].isoformat() if r[1] else None,
+                        "payload": payload
+                    }
+                    fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        cur.close()
+        conn.close()
+        return out_path
+
+    @task
+    def list_months(src_file: str) -> List[str]:
+        """
+        Возвращает отсортированный список месяцев в формате YYYY-MM, присутствующих в src_file
+        """
+        months = set()
+        with open(src_file, "r", encoding="utf-8") as fin:
+            for line in fin:
+                rec = json.loads(line)
+                if not rec.get("create_date"):
+                    continue
+                dt = datetime.fromisoformat(rec["create_date"])
+                months.add(dt.strftime("%Y-%m"))
+        return sorted(months)
+
+    @task_group(group_id="process_month_group")
+    def process_month_group(month: str, src_file: str):
+        """
+        Для одного месяца: фильтруем записи по месяцу, делаем дедуп, API запросы и батч-вставки.
+        """
+
+        @task
+        def collect_month_rows(month: str, src_file: str) -> str:
+            """
+            Сохраняет JSONL с записями только для данного месяца и возвращает путь.
+            """
+            out_path = f"/tmp/stone_src_{month}.jsonl"
+            try:
+                os.remove(out_path)
+            except FileNotFoundError:
+                pass
+            with open(src_file, "r", encoding="utf-8") as fin, open(out_path, "w", encoding="utf-8") as fout:
+                for line in fin:
+                    rec = json.loads(line)
+                    cd = rec.get("create_date")
+                    if not cd:
+                        continue
+                    dt = datetime.fromisoformat(cd)
+                    if dt.strftime("%Y-%m") == month:
+                        fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            return out_path
+
+        @task
+        def process_month_file(month_file: str):
+            """
+            Основная логика: дедуп payload'ов, асинхронные запросы и батч-вставки.
+            """
+            # Собираем map payload_key -> {"payload":..., "targets":[(product_id, create_date), ...]}
+            def payload_key(p: Dict) -> str:
+                return json.dumps(p, sort_keys=True, ensure_ascii=False)
+
+            payload_map: Dict[str, Dict] = {}
+            with open(month_file, "r", encoding="utf-8") as fin:
+                for line in fin:
+                    rec = json.loads(line)
+                    p = rec["payload"]
+                    k = payload_key(p)
+                    if k not in payload_map:
+                        payload_map[k] = {"payload": p, "targets": []}
+                    payload_map[k]["targets"].append((rec["product_id"], rec["create_date"]))
+
+            # Асинхронные запросы
+            async def fetch_all():
+                results: Dict[str, str] = {}
+                semaphore = asyncio.Semaphore(api_workers)
+
+                async def do_request(k: str, payload: Dict):
+                    async with semaphore:
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.post(API_URL, json=payload, headers=API_HEADERS, timeout=request_timeout)
+                                resp.raise_for_status()
+                                results[k] = resp.text
+                        except Exception as e:
+                            results[k] = json.dumps({"error": str(e)})
+
+                tasks = [do_request(k, entry["payload"]) for k, entry in payload_map.items()]
+                await asyncio.gather(*tasks)
+                return results
+
+            loop = asyncio.get_event_loop()
+            api_results = loop.run_until_complete(fetch_all())
+
+            # Подготовка к вставке и батч-инсерты
+            def _bulk_insert_rows(rows: List[Tuple]):
+                pg = PostgresHook(postgres_conn_id=GP_CONN_ID)
+                conn = pg.get_conn()
+                cur = conn.cursor()
+                table = "grp_ods_cadas.brilliantearth_price_raw"
+                insert_sql = f"INSERT INTO {table} (product_id, create_date, price_raw_data) VALUES %s"
+                try:
+                    execute_values(cur, insert_sql, rows, page_size=1000)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    cur.close()
+                    conn.close()
+
+            buffer: List[Tuple] = []
+            for k, entry in payload_map.items():
+                resp = api_results.get(k, json.dumps({"error": "no_response"}))
+                for (product_id, create_date) in entry["targets"]:
+                    buffer.append((product_id, create_date, resp))
+                    if len(buffer) >= insert_batch_size:
+                        _bulk_insert_rows(buffer)
+                        buffer = []
+            if buffer:
+                _bulk_insert_rows(buffer)
+
+        month_file = collect_month_rows(month, src_file)
+        process_month_file(month_file)
+
+    # DAG flow
+    src_file = dump_source_to_file()
+    months = list_months(src_file)
+
+    # Динамически создаём группу задач для каждого месяца
+    for m in months:
+        process_month_group(m, src_file)
